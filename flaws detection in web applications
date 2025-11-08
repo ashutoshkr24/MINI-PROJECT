@@ -1,0 +1,90 @@
+import urllib.request
+import requests
+from bs4 import BeautifulSoup
+import re
+import time
+from zapv2 import ZAPv2
+
+def scan_for_xss(url):
+    try:
+        print(f"[*] Starting basic XSS check on: {url}")
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.text, 'html.parser')
+        forms = soup.find_all('form')
+        if not forms:
+            print("[-] No forms found for basic XSS check.")
+            return
+        xss_payload = "<script>alert('XSS Test');</script>"
+        for form in forms:
+            action = form.get('action')
+
+            if not action:
+                continue
+            method = form.get('method', 'get').lower()
+            form_url = requests.compat.urljoin(url, action)
+            inputs = form.find_all('input')
+            form_data = {
+                input_tag.get('name'): xss_tag.get('value') if input_tag.get('type') == 'hidden' else xss_payload
+                for input_tag in inputs if input_tag.get('name')
+            }
+
+            if method == 'post':
+                test_response = requests.post(form_url, data=form_data, timeout=10)
+            else:
+                test_response = requests.get(form_url, params=form_data, timeout=10)
+
+            if re.search(re.escape(xss_payload), test_response.text, re.IGNORECASE):
+                print(f"[!!!] Potential XSS vulnerability found at {test_response.url}")
+            else:
+                print("[+] Form appears safe from this simple XSS payload.")
+
+    except requests.exceptions.RequestException as e:
+        print(f"[-] A requests error occurred: {e}")
+    except Exception as e:
+        print(f"[-] An unexpected error occurred: {e}")
+
+def run_zap_scan(target_url, api_key, proxy_address):
+    try:
+        print("\n[*] Connecting to OWASP ZAP...")
+        zap = ZAPv2(proxies={'http': proxy_address, 'https': proxy_address}, apikey=api_key)
+
+        print("[*] Starting ZAP spider scan...")
+        spider_scan_id = zap.spider.scan(target_url)
+
+
+        while int(zap.spider.status(spider_scan_id)) < 100:
+            print(f"[*] Spider progress: {zap.spider.status(spider_scan_id)}%")
+            time.sleep(2)
+        print("[+] Spider scan complete.")
+
+        print("[*] Starting ZAP active scan...")
+        active_scan_id = zap.ascan.scan(target_url)
+
+
+        while int(zap.ascan.status(active_scan_id)) < 100:
+            print(f"[*] Active scan progress: {zap.ascan.status(active_scan_id)}%")
+            time.sleep(5)
+        print("[+] Active scan complete.")
+
+        print("\n[--- ZAP Scan Results ---]")
+
+        alerts = zap.core.alerts()
+        if not alerts:
+            print("[+] No alerts found by ZAP.")
+        else:
+            for alert in alerts:
+                print(f"[!!!] {alert.get('alert')}")
+                print(f"      URL: {alert.get('url')}")
+                print(f"      Risk: {alert.get('risk')}")
+                print(f"      Description: {alert.get('description')}\n")
+
+    except Exception as e:
+        print(f"[-] Could not connect to ZAP or an error occurred during the scan: {e}")
+
+if __name__ == "__main__":
+    url = "https://y2mate.lol/en163/"
+    proxy_address = 'http://127.0.0.1:8080'
+    api_key = "v7lgp76856v7femup47icod053"
+    scan_for_xss(url)
+    run_zap_scan(url,api_key,proxy_address)
